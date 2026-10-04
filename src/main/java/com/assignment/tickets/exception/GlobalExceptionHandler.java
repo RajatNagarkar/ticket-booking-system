@@ -1,6 +1,7 @@
 package com.assignment.tickets.exception;
 
 import com.assignment.tickets.dto.response.ErrorResponse;
+import com.assignment.tickets.observability.RequestContext;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -22,7 +23,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ErrorResponse> handleApi(ApiException e) {
-        return ResponseEntity.status(e.getStatus()).body(new ErrorResponse(e.getCode(), e.getMessage()));
+        return error(e.getStatus(), e.getCode(), e.getMessage());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -54,15 +55,19 @@ public class GlobalExceptionHandler {
         if (e instanceof org.springframework.web.ErrorResponse springError
                 && springError.getStatusCode().is4xxClientError()) {
             HttpStatus status = HttpStatus.valueOf(springError.getStatusCode().value());
-            return ResponseEntity.status(status)
-                    .body(new ErrorResponse(status.name().toLowerCase(), springError.getBody().getDetail()));
+            return error(status, status.name().toLowerCase(), springError.getBody().getDetail());
         }
         log.error("Unhandled exception", e);
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new ErrorResponse("internal_error", "Unexpected error"));
+        return error(HttpStatus.INTERNAL_SERVER_ERROR, "internal_error", "Unexpected error");
     }
 
     private static ResponseEntity<ErrorResponse> badRequest(String code, String message) {
-        return ResponseEntity.badRequest().body(new ErrorResponse(code, message));
+        return error(HttpStatus.BAD_REQUEST, code, message);
+    }
+
+    /** The error code also becomes the request's logged outcome. */
+    private static ResponseEntity<ErrorResponse> error(HttpStatus status, String code, String message) {
+        RequestContext.put(RequestContext.OUTCOME, code);
+        return ResponseEntity.status(status).body(new ErrorResponse(code, message));
     }
 }

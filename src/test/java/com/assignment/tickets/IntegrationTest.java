@@ -4,6 +4,7 @@ import com.assignment.tickets.service.TokenService;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
@@ -18,8 +19,10 @@ import org.testcontainers.containers.PostgreSQLContainer;
 
 /**
  * Boots the full app on a random port against a real Postgres. The container is
- * shared by every test class (started once, stopped when the JVM exits).
+ * shared by every test class (started once, stopped when the JVM exits). Metrics export
+ * is on (Spring Boot disables it in tests by default) so the Prometheus endpoint exists.
  */
+@AutoConfigureObservability
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 public abstract class IntegrationTest {
 

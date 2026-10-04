@@ -1,6 +1,7 @@
 package com.assignment.tickets.config;
 
 import com.assignment.tickets.dto.response.ErrorResponse;
+import com.assignment.tickets.observability.RequestContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
@@ -61,6 +62,7 @@ public class SecurityConfig {
 
     private static void writeError(HttpServletResponse response, ObjectMapper objectMapper, HttpStatus status,
                                    String code, String message) throws IOException {
+        RequestContext.put(RequestContext.OUTCOME, code);
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         objectMapper.writeValue(response.getOutputStream(), new ErrorResponse(code, message));
