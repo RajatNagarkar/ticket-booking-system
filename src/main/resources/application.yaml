@@ -21,6 +21,8 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: false
     validate-on-migrate: true
+  jackson:
+    property-naming-strategy: SNAKE_CASE
   mvc:
     servlet:
       path: /tbs
