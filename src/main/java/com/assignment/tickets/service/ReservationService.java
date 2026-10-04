@@ -8,9 +8,11 @@ import com.assignment.tickets.entity.Seat;
 import com.assignment.tickets.entity.Show;
 import com.assignment.tickets.exception.BadRequestException;
 import com.assignment.tickets.exception.IdempotencyKeyReusedException;
+import com.assignment.tickets.exception.PerUserLimitException;
 import com.assignment.tickets.exception.SeatTakenException;
 import com.assignment.tickets.exception.ShowNotFoundException;
 import com.assignment.tickets.exception.UnknownSeatException;
+import com.assignment.tickets.repository.QuotaRepository;
 import com.assignment.tickets.repository.ReservationRepository;
 import com.assignment.tickets.repository.SeatRepository;
 import com.assignment.tickets.repository.ShowRepository;
@@ -34,6 +36,7 @@ public class ReservationService {
     private final ShowRepository shows;
     private final SeatRepository seats;
     private final ReservationRepository reservations;
+    private final QuotaRepository quotas;
 
     /**
      * All-or-nothing: either every requested seat is confirmed to this user, or the
@@ -42,6 +45,9 @@ public class ReservationService {
      * Idempotent per (user, idempotency key): a retry with the same seats returns the
      * original reservation; the same key with different seats is rejected. A declined
      * attempt rolls back, so its key stays free for a later retry.
+     * <p>
+     * Locks are always taken in the same order (idempotency key, then the user's quota row,
+     * then seats sorted by seat_no), so concurrent reservations cannot deadlock.
      */
     @Transactional
     public ReservationOutcome reserve(UUID showId, String userId, ReserveRequest request) {
@@ -60,6 +66,12 @@ public class ReservationService {
             return replay(userId, request.idempotencyKey(), requestHash);
         }
         Reservation reservation = inserted.get();
+
+        // After the replay check, so a retry never counts against the limit twice.
+        if (seatNos.size() > show.perUserLimit()
+                || !quotas.tryAcquire(showId, userId, seatNos.size(), show.perUserLimit())) {
+            throw new PerUserLimitException(show.perUserLimit());
+        }
 
         List<Seat> locked = seats.lockForUpdate(showId, seatNos);
         if (locked.size() < seatNos.size()) {

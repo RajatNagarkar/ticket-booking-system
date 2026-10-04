@@ -258,6 +258,96 @@ class ReservationApiTest extends IntegrationTest {
                 .allSatisfy(r -> assertThat(r.getBody().get("error").asText()).isEqualTo("idempotency_key_reused"));
     }
 
+    @Test
+    void requestLargerThanLimitIs409() {
+        String showId = createShow(List.of("A1", "A2", "A3"), 100, 2);
+
+        ResponseEntity<JsonNode> response = reserve(showId, "alice", List.of("A1", "A2", "A3"), key());
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody().get("error").asText()).isEqualTo("per_user_limit");
+        assertInvariant(showId, 3);
+        assertThat(getShow(showId).at("/counts/available").asInt()).isEqualTo(3);
+    }
+
+    @Test
+    void limitIsCumulativeAcrossReservations() {
+        String showId = createShow(List.of("A1", "A2", "A3"), 100, 2);
+        reserve(showId, "alice", List.of("A1"), key());
+
+        ResponseEntity<JsonNode> overLimit = reserve(showId, "alice", List.of("A2", "A3"), key());
+        ResponseEntity<JsonNode> withinLimit = reserve(showId, "alice", List.of("A2"), key());
+
+        assertThat(overLimit.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(overLimit.getBody().get("error").asText()).isEqualTo("per_user_limit");
+        assertThat(withinLimit.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(heldBy(showId, "alice")).isEqualTo(2);
+    }
+
+    @Test
+    void limitIsPerUser() {
+        String showId = createShow(List.of("A1", "A2"), 100, 1);
+
+        assertThat(reserve(showId, "alice", List.of("A1"), key()).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(reserve(showId, "bob", List.of("A2"), key()).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    }
+
+    @Test
+    void declinedSeatDoesNotConsumeQuota() {
+        String showId = createShow(List.of("A1", "A2"), 100, 1);
+        reserve(showId, "bob", List.of("A1"), key());
+
+        ResponseEntity<JsonNode> declined = reserve(showId, "alice", List.of("A1"), key());
+        ResponseEntity<JsonNode> next = reserve(showId, "alice", List.of("A2"), key());
+
+        assertThat(declined.getBody().get("error").asText()).isEqualTo("seat_taken");
+        assertThat(next.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(heldBy(showId, "alice")).isEqualTo(1);
+    }
+
+    @Test
+    void replayDoesNotConsumeQuota() {
+        String showId = createShow(List.of("A1"), 100, 1);
+        String key = key();
+        reserve(showId, "alice", List.of("A1"), key);
+
+        ResponseEntity<JsonNode> retry = reserve(showId, "alice", List.of("A1"), key);
+
+        assertThat(retry.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(retry.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("true");
+        assertThat(heldBy(showId, "alice")).isEqualTo(1);
+    }
+
+    @Test
+    void parallelRequestsFromOneUserNeverExceedLimit() throws Exception {
+        List<String> seatNos = IntStream.rangeClosed(1, 10).mapToObj(i -> "A" + i).toList();
+        String showId = createShow(seatNos, 100, 4);
+
+        List<ResponseEntity<JsonNode>> responses = race(10,
+                i -> reserve(showId, "alice", List.of(seatNos.get(i)), key()));
+
+        assertThat(responses).filteredOn(r -> r.getStatusCode() == HttpStatus.CREATED).hasSize(4);
+        assertThat(responses).filteredOn(r -> r.getStatusCode() == HttpStatus.CONFLICT).hasSize(6)
+                .allSatisfy(r -> assertThat(r.getBody().get("error").asText()).isEqualTo("per_user_limit"));
+        assertThat(confirmedSeatsOf(showId, "alice")).isEqualTo(4);
+        assertThat(heldBy(showId, "alice")).isEqualTo(4);
+        assertInvariant(showId, 10);
+    }
+
+    @Test
+    void parallelMultiSeatRequestsFromOneUserNeverExceedLimit() throws Exception {
+        List<String> seatNos = IntStream.rangeClosed(1, 20).mapToObj(i -> "A" + i).toList();
+        String showId = createShow(seatNos, 100, 4);
+
+        List<ResponseEntity<JsonNode>> responses = race(10,
+                i -> reserve(showId, "alice", seatNos.subList(2 * i, 2 * i + 2), key()));
+
+        assertThat(responses).allSatisfy(r -> assertThat(r.getStatusCode().is5xxServerError()).isFalse());
+        assertThat(responses).filteredOn(r -> r.getStatusCode() == HttpStatus.CREATED).hasSize(2);
+        assertThat(confirmedSeatsOf(showId, "alice")).isEqualTo(4);
+        assertThat(heldBy(showId, "alice")).isEqualTo(4);
+    }
+
     private static String key() {
         return UUID.randomUUID().toString();
     }
@@ -288,8 +378,12 @@ class ReservationApiTest extends IntegrationTest {
     }
 
     private String createShow(List<String> seats, long pricePaise) {
-        return http.postForObject("/tbs/shows",
-                Map.of("name", "show", "seats", seats, "price_paise", pricePaise), JsonNode.class)
+        return createShow(seats, pricePaise, 4);
+    }
+
+    private String createShow(List<String> seats, long pricePaise, int perUserLimit) {
+        return http.postForObject("/tbs/shows", Map.of("name", "show", "seats", seats,
+                        "price_paise", pricePaise, "per_user_limit", perUserLimit), JsonNode.class)
                 .get("id").asText();
     }
 
@@ -313,6 +407,17 @@ class ReservationApiTest extends IntegrationTest {
             }
         }
         throw new AssertionError("No seat " + seatNo);
+    }
+
+    private int heldBy(String showId, String userId) {
+        return jdbc.queryForObject("SELECT held FROM user_show_quota WHERE show_id = ?::uuid AND user_id = ?",
+                Integer.class, showId, userId);
+    }
+
+    private int confirmedSeatsOf(String showId, String userId) {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM seats WHERE show_id = ?::uuid AND user_id = ? AND status = 'confirmed'
+                """, Integer.class, showId, userId);
     }
 
     private long reservationCount(String showId) {
