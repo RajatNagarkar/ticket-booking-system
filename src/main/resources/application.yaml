@@ -27,6 +27,12 @@ spring:
     servlet:
       path: /tbs
 
+app:
+  jwt:
+    secret: ${JWT_SECRET}
+    issuer: ticket-booking-system
+    ttl: ${JWT_TTL:PT12H}
+
 server:
   port: 8085
   shutdown: graceful

@@ -18,9 +18,6 @@ import java.util.function.Function;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -513,27 +510,17 @@ class ReservationApiTest extends IntegrationTest {
     }
 
     private String createShow(List<String> seats, long pricePaise, int perUserLimit) {
-        return http.postForObject("/tbs/shows", Map.of("name", "show", "seats", seats,
-                        "price_paise", pricePaise, "per_user_limit", perUserLimit), JsonNode.class)
-                .get("id").asText();
+        return post("/tbs/shows", Map.of("name", "show", "seats", seats,
+                        "price_paise", pricePaise, "per_user_limit", perUserLimit), ADMIN)
+                .getBody().get("id").asText();
     }
 
     private ResponseEntity<JsonNode> reserve(String showId, String userId, List<String> seats, String key) {
-        HttpHeaders headers = new HttpHeaders();
-        if (userId != null) {
-            headers.set("X-User-Id", userId);
-        }
-        return http.exchange("/tbs/shows/" + showId + "/reserve", HttpMethod.POST,
-                new HttpEntity<>(Map.of("seats", seats, "idempotency_key", key), headers), JsonNode.class);
+        return post("/tbs/shows/" + showId + "/reserve", Map.of("seats", seats, "idempotency_key", key), userId);
     }
 
     private ResponseEntity<JsonNode> cancel(String reservationId, String userId) {
-        HttpHeaders headers = new HttpHeaders();
-        if (userId != null) {
-            headers.set("X-User-Id", userId);
-        }
-        return http.exchange("/tbs/reservations/" + reservationId + "/cancel", HttpMethod.POST,
-                new HttpEntity<>(headers), JsonNode.class);
+        return post("/tbs/reservations/" + reservationId + "/cancel", null, userId);
     }
 
     private static String reservationId(ResponseEntity<JsonNode> response) {

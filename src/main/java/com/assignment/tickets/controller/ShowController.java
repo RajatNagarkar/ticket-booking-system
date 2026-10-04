@@ -22,7 +22,7 @@ public class ShowController {
 
     private final ShowService service;
 
-    // TODO(auth): admin only
+    /** Admin only (enforced in SecurityConfig). */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ShowResponse create(@Valid @RequestBody CreateShowRequest request) {
