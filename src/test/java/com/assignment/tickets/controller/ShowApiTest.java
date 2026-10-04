@@ -15,10 +15,10 @@ class ShowApiTest extends IntegrationTest {
 
     @Test
     void createsShowWithEverySeatAvailable() {
-        ResponseEntity<JsonNode> created = http.postForEntity("/tbs/shows", Map.of(
+        ResponseEntity<JsonNode> created = post("/tbs/shows", Map.of(
                 "name", "friday-night",
                 "seats", List.of("A1", "A2", "A3"),
-                "price_paise", 25000), JsonNode.class);
+                "price_paise", 25000), ADMIN);
 
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         JsonNode body = created.getBody();
@@ -36,11 +36,11 @@ class ShowApiTest extends IntegrationTest {
 
     @Test
     void getReturnsSameStateAsCreate() {
-        JsonNode created = http.postForObject("/tbs/shows", Map.of(
+        JsonNode created = post("/tbs/shows", Map.of(
                 "name", "matinee",
                 "seats", List.of("B1", "B2"),
                 "price_paise", 15000,
-                "per_user_limit", 2), JsonNode.class);
+                "per_user_limit", 2), ADMIN).getBody();
 
         ResponseEntity<JsonNode> fetched = http.getForEntity("/tbs/shows/" + created.get("id").asText(), JsonNode.class);
 
@@ -67,10 +67,10 @@ class ShowApiTest extends IntegrationTest {
 
     @Test
     void duplicateSeatsAre400() {
-        ResponseEntity<JsonNode> response = http.postForEntity("/tbs/shows", Map.of(
+        ResponseEntity<JsonNode> response = post("/tbs/shows", Map.of(
                 "name", "dup",
                 "seats", List.of("A1", "A1"),
-                "price_paise", 100), JsonNode.class);
+                "price_paise", 100), ADMIN);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody().get("error").asText()).isEqualTo("duplicate_seats");
@@ -78,10 +78,10 @@ class ShowApiTest extends IntegrationTest {
 
     @Test
     void invalidBodyIs400() {
-        ResponseEntity<JsonNode> response = http.postForEntity("/tbs/shows", Map.of(
+        ResponseEntity<JsonNode> response = post("/tbs/shows", Map.of(
                 "name", "",
                 "seats", List.of(),
-                "price_paise", -1), JsonNode.class);
+                "price_paise", -1), ADMIN);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody().get("error").asText()).isEqualTo("validation_failed");
