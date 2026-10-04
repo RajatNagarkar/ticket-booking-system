@@ -30,4 +30,12 @@ public class QuotaRepository {
                 WHERE q.held + EXCLUDED.held <= ?
                 """, showId, userId, seats, limit) == 1;
     }
+
+    public void release(UUID showId, String userId, int seats) {
+        jdbc.update("""
+                UPDATE user_show_quota
+                SET held = held - ?
+                WHERE show_id = ? AND user_id = ?
+                """, seats, showId, userId);
+    }
 }

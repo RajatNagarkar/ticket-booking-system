@@ -9,6 +9,7 @@ import com.assignment.tickets.entity.Show;
 import com.assignment.tickets.exception.BadRequestException;
 import com.assignment.tickets.exception.IdempotencyKeyReusedException;
 import com.assignment.tickets.exception.PerUserLimitException;
+import com.assignment.tickets.exception.ReservationNotFoundException;
 import com.assignment.tickets.exception.SeatTakenException;
 import com.assignment.tickets.exception.ShowNotFoundException;
 import com.assignment.tickets.exception.UnknownSeatException;
@@ -47,7 +48,8 @@ public class ReservationService {
      * attempt rolls back, so its key stays free for a later retry.
      * <p>
      * Locks are always taken in the same order (idempotency key, then the user's quota row,
-     * then seats sorted by seat_no), so concurrent reservations cannot deadlock.
+     * then seats sorted by seat_no), so concurrent reservations cannot deadlock. Cancel
+     * follows the same quota-then-seats order.
      */
     @Transactional
     public ReservationOutcome reserve(UUID showId, String userId, ReserveRequest request) {
@@ -87,6 +89,32 @@ public class ReservationService {
                     .toList());
         }
         return new ReservationOutcome(ReservationResponse.from(reservation), false);
+    }
+
+    /**
+     * Owner-only and idempotent: cancelling an already-cancelled reservation returns it
+     * unchanged. Another user's reservation looks exactly like a missing one (404).
+     */
+    @Transactional
+    public ReservationResponse cancel(UUID reservationId, String userId) {
+        Optional<Reservation> cancelled = reservations.cancel(reservationId, userId);
+        if (cancelled.isEmpty()) {
+            return reservations.findById(reservationId)
+                    .filter(r -> r.userId().equals(userId))
+                    .map(ReservationResponse::from)
+                    .orElseThrow(() -> new ReservationNotFoundException(reservationId));
+        }
+        Reservation reservation = cancelled.get();
+        int seatCount = reservation.seats().size();
+
+        // Quota before seats: the same lock order as reserve, so the two cannot deadlock.
+        quotas.release(reservation.showId(), userId, seatCount);
+        int released = seats.release(reservation.id());
+        if (released != seatCount) {
+            throw new IllegalStateException("Reservation " + reservation.id() + " owned " + released
+                    + " seats, expected " + seatCount);
+        }
+        return ReservationResponse.from(reservation);
     }
 
     private ReservationOutcome replay(String userId, String idempotencyKey, String requestHash) {

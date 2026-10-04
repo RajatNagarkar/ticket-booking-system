@@ -52,6 +52,18 @@ public class SeatRepository {
                 """, reservationId, userId, showId, seatNos.toArray(String[]::new));
     }
 
+    /**
+     * Returns a reservation's seats to available. Scoped by reservation_id, so it can only
+     * ever touch seats this reservation owns, never a seat since confirmed to someone else.
+     */
+    public int release(UUID reservationId) {
+        return jdbc.update("""
+                UPDATE seats
+                SET status = 'available', reservation_id = NULL, user_id = NULL
+                WHERE reservation_id = ? AND status = 'confirmed'
+                """, reservationId);
+    }
+
     /** One statement, so all statuses come from the same snapshot and the counts reconcile. */
     public List<Seat> findByShow(UUID showId) {
         return jdbc.query("""

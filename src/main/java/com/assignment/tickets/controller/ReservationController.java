@@ -30,12 +30,24 @@ public class ReservationController {
     public ResponseEntity<ReservationResponse> reserve(@PathVariable UUID showId,
                                                        @RequestHeader(name = "X-User-Id", required = false) String userId,
                                                        @Valid @RequestBody ReserveRequest request) {
-        if (userId == null || userId.isBlank()) {
-            throw new MissingUserException();
-        }
-        ReservationOutcome outcome = service.reserve(showId, userId, request);
+        ReservationOutcome outcome = service.reserve(showId, requireUser(userId), request);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .header(REPLAYED_HEADER, String.valueOf(outcome.replayed()))
                 .body(outcome.reservation());
+    }
+
+    /** Owner only. Cancelling twice is safe and returns the cancelled reservation again. */
+    // TODO(auth): user id comes from the JWT subject, not a header.
+    @PostMapping("/reservations/{reservationId}/cancel")
+    public ReservationResponse cancel(@PathVariable UUID reservationId,
+                                      @RequestHeader(name = "X-User-Id", required = false) String userId) {
+        return service.cancel(reservationId, requireUser(userId));
+    }
+
+    private static String requireUser(String userId) {
+        if (userId == null || userId.isBlank()) {
+            throw new MissingUserException();
+        }
+        return userId;
     }
 }
