@@ -28,6 +28,8 @@ spring:
       path: /tbs
 
 app:
+  metrics:
+    seat-gauge-window: ${SEAT_GAUGE_WINDOW:PT24H}
   jwt:
     secret: ${JWT_SECRET}
     issuer: ticket-booking-system
@@ -46,9 +48,19 @@ management:
     health:
       probes:
         enabled: true
+      show-components: always
       group:
+        liveness:
+          include: livenessState
         readiness:
-          include: readinessState,db
+          include: readinessState,database
+  health:
+    # Replaced by the "database" indicator, which uses its own pool with short timeouts.
+    db:
+      enabled: false
   metrics:
     tags:
       application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true

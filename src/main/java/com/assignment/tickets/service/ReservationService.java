@@ -93,15 +93,16 @@ public class ReservationService {
 
     /**
      * Owner-only and idempotent: cancelling an already-cancelled reservation returns it
-     * unchanged. Another user's reservation looks exactly like a missing one (404).
+     * unchanged (flagged as replayed). Another user's reservation looks exactly like a
+     * missing one (404).
      */
     @Transactional
-    public ReservationResponse cancel(UUID reservationId, String userId) {
+    public ReservationOutcome cancel(UUID reservationId, String userId) {
         Optional<Reservation> cancelled = reservations.cancel(reservationId, userId);
         if (cancelled.isEmpty()) {
             return reservations.findById(reservationId)
                     .filter(r -> r.userId().equals(userId))
-                    .map(ReservationResponse::from)
+                    .map(r -> new ReservationOutcome(ReservationResponse.from(r), true))
                     .orElseThrow(() -> new ReservationNotFoundException(reservationId));
         }
         Reservation reservation = cancelled.get();
@@ -114,7 +115,7 @@ public class ReservationService {
             throw new IllegalStateException("Reservation " + reservation.id() + " owned " + released
                     + " seats, expected " + seatCount);
         }
-        return ReservationResponse.from(reservation);
+        return new ReservationOutcome(ReservationResponse.from(reservation), false);
     }
 
     private ReservationOutcome replay(String userId, String idempotencyKey, String requestHash) {

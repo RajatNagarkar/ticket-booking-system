@@ -1,6 +1,9 @@
 package com.assignment.tickets.repository;
 
 import com.assignment.tickets.entity.Seat;
+import com.assignment.tickets.entity.SeatCount;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -62,6 +65,23 @@ public class SeatRepository {
                 SET status = 'available', reservation_id = NULL, user_id = NULL
                 WHERE reservation_id = ? AND status = 'confirmed'
                 """, reservationId);
+    }
+
+    /**
+     * Seat counts for shows created after {@code since}, with all three statuses (including
+     * zero counts), from one snapshot. Bounding by age keeps the query cost and the number of
+     * metric series from growing with every show ever created.
+     */
+    public List<SeatCount> countByShowAndStatus(Instant since) {
+        return jdbc.query("""
+                SELECT sh.id AS show_id, st.status, count(s.seat_no) AS seats
+                FROM shows sh
+                CROSS JOIN (VALUES ('available'), ('held'), ('confirmed')) AS st (status)
+                LEFT JOIN seats s ON s.show_id = sh.id AND s.status = st.status
+                WHERE sh.created_at >= ?
+                GROUP BY sh.id, st.status
+                """, (rs, i) -> new SeatCount(rs.getObject("show_id", UUID.class), rs.getString("status"),
+                rs.getLong("seats")), Timestamp.from(since));
     }
 
     /** One statement, so all statuses come from the same snapshot and the counts reconcile. */

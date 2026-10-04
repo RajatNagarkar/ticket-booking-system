@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  JSON logs (one object per line) with the request MDC: request_id, user_id, show_id,
+  reservation_id, outcome. Run with the "plain-logs" profile for human-readable local output.
+-->
+<configuration>
+    <springProfile name="plain-logs">
+        <include resource="org/springframework/boot/logging/logback/base.xml"/>
+    </springProfile>
+
+    <springProfile name="!plain-logs">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <fieldNames>
+                    <timestamp>ts</timestamp>
+                    <version>[ignore]</version>
+                    <levelValue>[ignore]</levelValue>
+                </fieldNames>
+            </encoder>
+        </appender>
+
+        <!-- Request threads hand log events to a queue instead of blocking on stdout during a burst. -->
+        <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+            <appender-ref ref="JSON"/>
+            <queueSize>8192</queueSize>
+            <discardingThreshold>0</discardingThreshold>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="ASYNC_JSON"/>
+        </root>
+    </springProfile>
+</configuration>
