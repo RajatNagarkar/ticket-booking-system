@@ -28,7 +28,6 @@ import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
@@ -38,6 +37,7 @@ public class ReservationService {
     private final SeatRepository seats;
     private final ReservationRepository reservations;
     private final QuotaRepository quotas;
+    private final TransactionRetry retry;
 
     /**
      * All-or-nothing: either every requested seat is confirmed to this user, or the
@@ -49,10 +49,14 @@ public class ReservationService {
      * <p>
      * Locks are always taken in the same order (idempotency key, then the user's quota row,
      * then seats sorted by seat_no), so concurrent reservations cannot deadlock. Cancel
-     * follows the same quota-then-seats order.
+     * follows the same quota-then-seats order. If PostgreSQL still aborts the transaction
+     * (deadlock or serialization failure), it is retried from scratch in a new transaction.
      */
-    @Transactional
     public ReservationOutcome reserve(UUID showId, String userId, ReserveRequest request) {
+        return retry.inTransaction(() -> reserveOnce(showId, userId, request));
+    }
+
+    private ReservationOutcome reserveOnce(UUID showId, String userId, ReserveRequest request) {
         List<String> seatNos = request.seats().stream().sorted().toList();
         if (new HashSet<>(seatNos).size() != seatNos.size()) {
             throw new BadRequestException("duplicate_seats", "Seat numbers must be unique");
@@ -94,10 +98,13 @@ public class ReservationService {
     /**
      * Owner-only and idempotent: cancelling an already-cancelled reservation returns it
      * unchanged (flagged as replayed). Another user's reservation looks exactly like a
-     * missing one (404).
+     * missing one (404). Retried like reserve on a transient database abort.
      */
-    @Transactional
     public ReservationOutcome cancel(UUID reservationId, String userId) {
+        return retry.inTransaction(() -> cancelOnce(reservationId, userId));
+    }
+
+    private ReservationOutcome cancelOnce(UUID reservationId, String userId) {
         Optional<Reservation> cancelled = reservations.cancel(reservationId, userId);
         if (cancelled.isEmpty()) {
             return reservations.findById(reservationId)

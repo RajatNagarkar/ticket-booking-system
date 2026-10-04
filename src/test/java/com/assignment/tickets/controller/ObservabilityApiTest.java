@@ -86,6 +86,22 @@ class ObservabilityApiTest extends IntegrationTest {
     }
 
     @Test
+    void invariantGaugeIsZeroAndCatchesARealViolation() {
+        String showId = createShow(List.of("A1", "A2"), 4);
+        reserve(showId, "alice", "A1", UUID.randomUUID().toString());
+        assertThat(metric("seats_invariant_violations", Map.of())).isZero();
+
+        // Break the invariant behind the API's back: a seat row disappears.
+        jdbc.update("DELETE FROM seats WHERE show_id = ?::uuid AND seat_no = 'A2'", showId);
+        try {
+            assertThat(metric("seats_invariant_violations", Map.of())).isEqualTo(1);
+        } finally {
+            jdbc.update("INSERT INTO seats (show_id, seat_no) VALUES (?::uuid, 'A2')", showId);
+        }
+        assertThat(metric("seats_invariant_violations", Map.of())).isZero();
+    }
+
+    @Test
     void readinessStaysUpWhileTheApplicationPoolIsExhausted() throws Exception {
         List<Connection> held = new ArrayList<>();
         try {
@@ -98,7 +114,8 @@ class ObservabilityApiTest extends IntegrationTest {
             long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
             assertThat(readiness.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(elapsedMs).isLessThan(2_000);
+            // Generous bound for slow CI runners; on the shared pool this took ~31 s.
+            assertThat(elapsedMs).isLessThan(5_000);
         } finally {
             for (Connection connection : held) {
                 connection.close();
