@@ -53,6 +53,25 @@ public class ReservationRepository {
                 """, RESERVATION_MAPPER, userId, idempotencyKey).stream().findFirst();
     }
 
+    public Optional<Reservation> findById(UUID id) {
+        return jdbc.query("SELECT * FROM reservations WHERE id = ?", RESERVATION_MAPPER, id)
+                .stream().findFirst();
+    }
+
+    /**
+     * Cancels the reservation only if it belongs to this user and is still confirmed.
+     * The row lock makes concurrent cancels of the same reservation serialize: the second
+     * re-checks status = 'confirmed' after the first commits and matches nothing.
+     */
+    public Optional<Reservation> cancel(UUID id, String userId) {
+        return jdbc.query("""
+                UPDATE reservations
+                SET status = 'cancelled', cancelled_at = now()
+                WHERE id = ? AND user_id = ? AND status = 'confirmed'
+                RETURNING *
+                """, RESERVATION_MAPPER, id, userId).stream().findFirst();
+    }
+
     private static List<String> toList(Array array) throws SQLException {
         return List.of((String[]) array.getArray());
     }

@@ -348,6 +348,137 @@ class ReservationApiTest extends IntegrationTest {
         assertThat(heldBy(showId, "alice")).isEqualTo(4);
     }
 
+    @Test
+    void ownerCancelFreesSeatsAndQuota() {
+        String showId = createShow(List.of("A1", "A2"), 100, 2);
+        String reservationId = reservationId(reserve(showId, "alice", List.of("A1", "A2"), key()));
+
+        ResponseEntity<JsonNode> cancelled = cancel(reservationId, "alice");
+
+        assertThat(cancelled.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(cancelled.getBody().get("status").asText()).isEqualTo("cancelled");
+        assertThat(cancelled.getBody().get("reservation_id").asText()).isEqualTo(reservationId);
+        assertThat(getShow(showId).at("/counts/available").asInt()).isEqualTo(2);
+        assertThat(heldBy(showId, "alice")).isZero();
+        // Quota was returned, so the owner can book up to the limit again.
+        assertThat(reserve(showId, "alice", List.of("A1", "A2"), key()).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    }
+
+    @Test
+    void cancelledSeatIsRebookableByAnotherUser() {
+        String showId = createShow(List.of("A1"), 100);
+        cancel(reservationId(reserve(showId, "alice", List.of("A1"), key())), "alice");
+
+        ResponseEntity<JsonNode> response = reserve(showId, "bob", List.of("A1"), key());
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(seatStatus(getShow(showId), "A1")).isEqualTo("confirmed");
+    }
+
+    @Test
+    void nonOwnerCannotCancel() {
+        String showId = createShow(List.of("A1"), 100);
+        String reservationId = reservationId(reserve(showId, "alice", List.of("A1"), key()));
+
+        ResponseEntity<JsonNode> response = cancel(reservationId, "bob");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(response.getBody().get("error").asText()).isEqualTo("reservation_not_found");
+        assertThat(seatStatus(getShow(showId), "A1")).isEqualTo("confirmed");
+        assertThat(heldBy(showId, "alice")).isEqualTo(1);
+    }
+
+    @Test
+    void unknownReservationIs404() {
+        ResponseEntity<JsonNode> response = cancel(UUID.randomUUID().toString(), "alice");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void missingUserOnCancelIs401() {
+        ResponseEntity<JsonNode> response = cancel(UUID.randomUUID().toString(), null);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void cancellingTwiceIsIdempotent() {
+        String showId = createShow(List.of("A1", "A2"), 100);
+        String reservationId = reservationId(reserve(showId, "alice", List.of("A1", "A2"), key()));
+        cancel(reservationId, "alice");
+
+        ResponseEntity<JsonNode> again = cancel(reservationId, "alice");
+
+        assertThat(again.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(again.getBody().get("status").asText()).isEqualTo("cancelled");
+        assertThat(heldBy(showId, "alice")).isZero();
+        assertInvariant(showId, 2);
+    }
+
+    @Test
+    void staleCancelNeverFreesASeatNowOwnedBySomeoneElse() {
+        String showId = createShow(List.of("A1"), 100);
+        String aliceReservation = reservationId(reserve(showId, "alice", List.of("A1"), key()));
+        cancel(aliceReservation, "alice");
+        reserve(showId, "bob", List.of("A1"), key());
+
+        ResponseEntity<JsonNode> stale = cancel(aliceReservation, "alice");
+
+        assertThat(stale.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(seatStatus(getShow(showId), "A1")).isEqualTo("confirmed");
+        assertThat(heldBy(showId, "bob")).isEqualTo(1);
+    }
+
+    @Test
+    void retryAfterCancelReplaysTheCancelledReservation() {
+        String showId = createShow(List.of("A1"), 100);
+        String key = key();
+        String reservationId = reservationId(reserve(showId, "alice", List.of("A1"), key));
+        cancel(reservationId, "alice");
+
+        ResponseEntity<JsonNode> retry = reserve(showId, "alice", List.of("A1"), key);
+
+        assertThat(retry.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(retry.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("true");
+        assertThat(retry.getBody().get("status").asText()).isEqualTo("cancelled");
+        assertThat(seatStatus(getShow(showId), "A1")).isEqualTo("available");
+    }
+
+    @Test
+    void concurrentCancelsReleaseExactlyOnce() throws Exception {
+        String showId = createShow(List.of("A1", "A2"), 100);
+        String reservationId = reservationId(reserve(showId, "alice", List.of("A1", "A2"), key()));
+
+        List<ResponseEntity<JsonNode>> responses = race(20, i -> cancel(reservationId, "alice"));
+
+        assertThat(responses).allSatisfy(r -> assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK));
+        assertThat(heldBy(showId, "alice")).isZero();
+        assertThat(getShow(showId).at("/counts/available").asInt()).isEqualTo(2);
+        assertQuotaMatchesSeats(showId);
+    }
+
+    @Test
+    void cancelRacingReservesStaysConsistent() throws Exception {
+        for (int round = 0; round < 20; round++) {
+            String showId = createShow(List.of("A1", "A2", "A3"), 100, 4);
+            String reservationId = reservationId(reserve(showId, "alice", List.of("A1", "A2"), key()));
+
+            // Limit 4 lets Alice's reserve pass the quota guard and reach the seat locks while
+            // her cancel is releasing the same seats: with inconsistent lock order this deadlocks.
+            // Others storm the seats being freed.
+            List<ResponseEntity<JsonNode>> responses = race(12, i -> switch (i % 3) {
+                case 0 -> cancel(reservationId, "alice");
+                case 1 -> reserve(showId, "alice", List.of("A2", "A3"), key());
+                default -> reserve(showId, "user-" + i, List.of("A1"), key());
+            });
+
+            assertThat(responses).allSatisfy(r -> assertThat(r.getStatusCode().is5xxServerError()).isFalse());
+            assertQuotaMatchesSeats(showId);
+            assertInvariant(showId, 3);
+        }
+    }
+
     private static String key() {
         return UUID.randomUUID().toString();
     }
@@ -394,6 +525,31 @@ class ReservationApiTest extends IntegrationTest {
         }
         return http.exchange("/tbs/shows/" + showId + "/reserve", HttpMethod.POST,
                 new HttpEntity<>(Map.of("seats", seats, "idempotency_key", key), headers), JsonNode.class);
+    }
+
+    private ResponseEntity<JsonNode> cancel(String reservationId, String userId) {
+        HttpHeaders headers = new HttpHeaders();
+        if (userId != null) {
+            headers.set("X-User-Id", userId);
+        }
+        return http.exchange("/tbs/reservations/" + reservationId + "/cancel", HttpMethod.POST,
+                new HttpEntity<>(headers), JsonNode.class);
+    }
+
+    private static String reservationId(ResponseEntity<JsonNode> response) {
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        return response.getBody().get("reservation_id").asText();
+    }
+
+    /** Each user's quota count equals the seats actually confirmed to them. */
+    private void assertQuotaMatchesSeats(String showId) {
+        Integer mismatched = jdbc.queryForObject("""
+                SELECT count(*) FROM user_show_quota q
+                WHERE q.show_id = ?::uuid
+                  AND q.held <> (SELECT count(*) FROM seats s
+                                 WHERE s.show_id = q.show_id AND s.user_id = q.user_id AND s.status = 'confirmed')
+                """, Integer.class, showId);
+        assertThat(mismatched).isZero();
     }
 
     private JsonNode getShow(String showId) {
