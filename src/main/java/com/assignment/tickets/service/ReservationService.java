@@ -1,11 +1,13 @@
 package com.assignment.tickets.service;
 
 import com.assignment.tickets.dto.request.ReserveRequest;
+import com.assignment.tickets.dto.response.ReservationOutcome;
 import com.assignment.tickets.dto.response.ReservationResponse;
 import com.assignment.tickets.entity.Reservation;
 import com.assignment.tickets.entity.Seat;
 import com.assignment.tickets.entity.Show;
 import com.assignment.tickets.exception.BadRequestException;
+import com.assignment.tickets.exception.IdempotencyKeyReusedException;
 import com.assignment.tickets.exception.SeatTakenException;
 import com.assignment.tickets.exception.ShowNotFoundException;
 import com.assignment.tickets.exception.UnknownSeatException;
@@ -18,6 +20,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -35,9 +38,13 @@ public class ReservationService {
     /**
      * All-or-nothing: either every requested seat is confirmed to this user, or the
      * transaction rolls back (including the reservation row) and nothing changes.
+     * <p>
+     * Idempotent per (user, idempotency key): a retry with the same seats returns the
+     * original reservation; the same key with different seats is rejected. A declined
+     * attempt rolls back, so its key stays free for a later retry.
      */
     @Transactional
-    public ReservationResponse reserve(UUID showId, String userId, ReserveRequest request) {
+    public ReservationOutcome reserve(UUID showId, String userId, ReserveRequest request) {
         List<String> seatNos = request.seats().stream().sorted().toList();
         if (new HashSet<>(seatNos).size() != seatNos.size()) {
             throw new BadRequestException("duplicate_seats", "Seat numbers must be unique");
@@ -45,9 +52,14 @@ public class ReservationService {
         Show show = shows.findById(showId).orElseThrow(() -> new ShowNotFoundException(showId));
         long amountPaise = Math.multiplyExact(show.pricePaise(), seatNos.size());
 
-        // Inserted first because seats.reservation_id references it; rolled back on any decline.
-        Reservation reservation = reservations.insertConfirmed(showId, userId, seatNos, amountPaise,
-                request.idempotencyKey(), requestHash(showId, seatNos));
+        // Inserted first: it claims the idempotency key, and seats.reservation_id references it.
+        String requestHash = requestHash(showId, seatNos);
+        Optional<Reservation> inserted = reservations.insertIfAbsent(showId, userId, seatNos, amountPaise,
+                request.idempotencyKey(), requestHash);
+        if (inserted.isEmpty()) {
+            return replay(userId, request.idempotencyKey(), requestHash);
+        }
+        Reservation reservation = inserted.get();
 
         List<Seat> locked = seats.lockForUpdate(showId, seatNos);
         if (locked.size() < seatNos.size()) {
@@ -62,7 +74,16 @@ public class ReservationService {
                     .map(Seat::seatNo)
                     .toList());
         }
-        return ReservationResponse.from(reservation);
+        return new ReservationOutcome(ReservationResponse.from(reservation), false);
+    }
+
+    private ReservationOutcome replay(String userId, String idempotencyKey, String requestHash) {
+        Reservation existing = reservations.findByUserAndKey(userId, idempotencyKey)
+                .orElseThrow(() -> new IllegalStateException("Idempotency conflict without a committed row"));
+        if (!existing.requestHash().equals(requestHash)) {
+            throw new IdempotencyKeyReusedException();
+        }
+        return new ReservationOutcome(ReservationResponse.from(existing), true);
     }
 
     /** Identifies the request body for idempotency: same show and same seats, in any order. */

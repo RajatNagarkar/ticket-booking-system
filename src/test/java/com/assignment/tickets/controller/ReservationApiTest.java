@@ -150,6 +150,114 @@ class ReservationApiTest extends IntegrationTest {
         assertInvariant(showId, seatNos.size());
     }
 
+    @Test
+    void retryWithSameKeyReturnsOriginalReservation() {
+        String showId = createShow(List.of("A1", "A2"), 100);
+        String key = key();
+
+        ResponseEntity<JsonNode> first = reserve(showId, "alice", List.of("A1", "A2"), key);
+        ResponseEntity<JsonNode> retry = reserve(showId, "alice", List.of("A2", "A1"), key);
+
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(first.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("false");
+        assertThat(retry.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(retry.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("true");
+        assertThat(retry.getBody()).isEqualTo(first.getBody());
+        assertThat(reservationCount(showId)).isEqualTo(1);
+    }
+
+    @Test
+    void sameKeyWithDifferentSeatsIs409() {
+        String showId = createShow(List.of("A1", "A2"), 100);
+        String key = key();
+        reserve(showId, "alice", List.of("A1"), key);
+
+        ResponseEntity<JsonNode> response = reserve(showId, "alice", List.of("A2"), key);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody().get("error").asText()).isEqualTo("idempotency_key_reused");
+        assertThat(seatStatus(getShow(showId), "A2")).isEqualTo("available");
+        assertThat(reservationCount(showId)).isEqualTo(1);
+    }
+
+    @Test
+    void sameKeyOnDifferentShowIs409() {
+        String showA = createShow(List.of("A1"), 100);
+        String showB = createShow(List.of("A1"), 100);
+        String key = key();
+        reserve(showA, "alice", List.of("A1"), key);
+
+        ResponseEntity<JsonNode> response = reserve(showB, "alice", List.of("A1"), key);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody().get("error").asText()).isEqualTo("idempotency_key_reused");
+    }
+
+    @Test
+    void keyIsScopedPerUser() {
+        String showId = createShow(List.of("A1", "A2"), 100);
+        String key = key();
+
+        ResponseEntity<JsonNode> alice = reserve(showId, "alice", List.of("A1"), key);
+        ResponseEntity<JsonNode> bob = reserve(showId, "bob", List.of("A2"), key);
+
+        assertThat(alice.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(bob.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(bob.getBody().get("reservation_id")).isNotEqualTo(alice.getBody().get("reservation_id"));
+    }
+
+    @Test
+    void declinedAttemptDoesNotBurnTheKey() {
+        String showId = createShow(List.of("A1", "A2"), 100);
+        reserve(showId, "bob", List.of("A1"), key());
+        String key = key();
+
+        ResponseEntity<JsonNode> declined = reserve(showId, "alice", List.of("A1"), key);
+        ResponseEntity<JsonNode> retry = reserve(showId, "alice", List.of("A2"), key);
+
+        assertThat(declined.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(declined.getBody().get("error").asText()).isEqualTo("seat_taken");
+        // Nothing was stored for the declined attempt, so the key is still free for a new body.
+        assertThat(retry.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(retry.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("false");
+        assertThat(reservationCount(showId)).isEqualTo(2);
+    }
+
+    @Test
+    void concurrentRetriesWithSameKeyReserveExactlyOnce() throws Exception {
+        String showId = createShow(List.of("A1", "A2"), 100);
+        String key = key();
+
+        List<ResponseEntity<JsonNode>> responses = race(50,
+                i -> reserve(showId, "alice", List.of("A1", "A2"), key));
+
+        assertThat(responses).allSatisfy(r -> assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CREATED));
+        assertThat(responses).extracting(r -> r.getBody().get("reservation_id").asText()).containsOnly(
+                responses.get(0).getBody().get("reservation_id").asText());
+        assertThat(responses).filteredOn(r -> "false".equals(r.getHeaders().getFirst("Idempotent-Replayed")))
+                .hasSize(1);
+        assertThat(reservationCount(showId)).isEqualTo(1);
+        assertInvariant(showId, 2);
+    }
+
+    @Test
+    void concurrentSameKeyWithDifferentSeatsHasOneWinner() throws Exception {
+        String showId = createShow(List.of("A1", "A2", "A3", "A4"), 100);
+        List<String> seatNos = List.of("A1", "A2", "A3", "A4");
+        String key = key();
+
+        List<ResponseEntity<JsonNode>> responses = race(40,
+                i -> reserve(showId, "alice", List.of(seatNos.get(i % seatNos.size())), key));
+
+        assertThat(responses).allSatisfy(r -> assertThat(r.getStatusCode().is5xxServerError()).isFalse());
+        assertThat(reservationCount(showId)).isEqualTo(1);
+        assertThat(getShow(showId).at("/counts/confirmed").asInt()).isEqualTo(1);
+        // Winner plus its identical retries get 201; every other body on that key gets 409.
+        assertThat(responses).filteredOn(r -> r.getStatusCode() == HttpStatus.CREATED).hasSize(10);
+        assertThat(responses).filteredOn(r -> r.getStatusCode() == HttpStatus.CONFLICT).hasSize(30)
+                .allSatisfy(r -> assertThat(r.getBody().get("error").asText()).isEqualTo("idempotency_key_reused"));
+    }
+
     private static String key() {
         return UUID.randomUUID().toString();
     }
