@@ -1,5 +1,6 @@
 package com.assignment.tickets.observability;
 
+import com.assignment.tickets.controller.MetricsScrapeController;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -25,6 +26,7 @@ public class SeatGaugeRefreshFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !request.getRequestURI().endsWith("/actuator/prometheus");
+        String uri = request.getRequestURI();
+        return !uri.endsWith("/actuator/prometheus") && !uri.endsWith(MetricsScrapeController.PATH);
     }
 }

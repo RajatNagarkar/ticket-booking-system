@@ -1,20 +1,28 @@
 package com.assignment.tickets.config;
 
+import com.assignment.tickets.controller.MetricsScrapeController;
 import com.assignment.tickets.dto.response.ErrorResponse;
 import com.assignment.tickets.observability.RequestContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.UUID;
 import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.context.annotation.Bean;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 
 /**
@@ -26,7 +34,36 @@ public class SecurityConfig {
 
     public static final String ROLES_CLAIM = "roles";
 
+    /**
+     * Basic auth for the Grafana Cloud scrape endpoint only, checked before the JWT chain.
+     * Without METRICS_PASSWORD the credentials are random, so every request is rejected.
+     */
     @Bean
+    @Order(1)
+    SecurityFilterChain metricsScrapeFilterChain(HttpSecurity http, ObjectMapper objectMapper,
+                                                 @Value("${app.metrics.scrape.user}") String user,
+                                                 @Value("${app.metrics.scrape.password}") String password)
+            throws Exception {
+        PasswordEncoder encoder = PasswordEncoderFactories.createDelegatingPasswordEncoder();
+        String secret = password.isBlank() ? UUID.randomUUID().toString() : password;
+        var users = new InMemoryUserDetailsManager(
+                User.withUsername(user).password(encoder.encode(secret)).roles("METRICS").build());
+        return http
+                .securityMatcher(MetricsScrapeController.PATH)
+                .csrf(csrf -> csrf.disable())
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .userDetailsService(users)
+                .authorizeHttpRequests(auth -> auth.anyRequest().hasRole("METRICS"))
+                .httpBasic(basic -> basic.authenticationEntryPoint((request, response, e) -> {
+                    response.setHeader("WWW-Authenticate", "Basic realm=\"metrics\"");
+                    writeError(response, objectMapper, HttpStatus.UNAUTHORIZED,
+                            "unauthenticated", "Missing or invalid credentials");
+                }))
+                .build();
+    }
+
+    @Bean
+    @Order(2)
     SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper objectMapper) throws Exception {
         return http
                 .csrf(csrf -> csrf.disable())

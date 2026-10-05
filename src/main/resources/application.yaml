@@ -38,6 +38,10 @@ spring:
 app:
   metrics:
     seat-gauge-window: ${SEAT_GAUGE_WINDOW:PT24H}
+    # Basic auth for /internal/metrics (Grafana Cloud scrape). Unset password: endpoint always 401.
+    scrape:
+      user: ${METRICS_USER:grafana}
+      password: ${METRICS_PASSWORD:}
   jwt:
     secret: ${JWT_SECRET}
     issuer: ticket-booking-system

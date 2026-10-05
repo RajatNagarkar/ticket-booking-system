@@ -1,0 +1,63 @@
+# Prometheus alerting rules (also importable into Grafana Cloud alerting / Mimir ruler).
+# These are the "2am pages": things that mean users are being hurt or correctness is at risk.
+groups:
+  - name: ticket-booking-system
+    rules:
+      - alert: ServerErrors
+        expr: sum(increase(http_server_requests_seconds_count{status=~"5.."}[5m])) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "5xx responses in the last 5 minutes"
+          description: "Every domain outcome is a 4xx by design, so any 5xx is a bug or an infrastructure failure. Check logs for request_id with level ERROR."
+
+      - alert: SeatInvariantViolated
+        expr: max(seats_invariant_violations) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "available + held + confirmed != total_seats for {{ $value }} show(s)"
+          description: "Should be impossible by construction. Stop selling and investigate the seats table for the affected shows (see the ERROR log 'Seat invariant violated')."
+
+      - alert: InstanceDown
+        expr: up{job=~".*ticket-booking.*"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "Metrics scrape failing for 2 minutes"
+          description: "The instance is down or unreachable. Check the platform health check (readiness fails closed when the database is unreachable)."
+
+      - alert: ReserveLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{uri="/shows/{showId}/reserve"}[5m]))) > 2
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Reserve p99 above 2s for 5 minutes"
+          description: "Usually connection-pool saturation or a slow database. Compare with hikaricp_connections_pending."
+
+      - alert: ConnectionPoolSaturated
+        expr: max(hikaricp_connections_pending) > 0
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: "Requests waiting for a database connection for 5 minutes"
+          description: "Short spikes during an on-sale are expected; sustained queueing means the pool (DB_POOL_SIZE) or the database is undersized."
+
+      - alert: TransactionRetries
+        expr: sum(increase(db_transaction_retries_total[15m])) > 0
+        labels:
+          severity: warn
+        annotations:
+          summary: "Transactions retried after deadlock/serialization failure"
+          description: "Sorted lock ordering should make deadlocks impossible; retries mean a code path takes locks in a different order."
+
+      - alert: SeatGaugeRefreshFailing
+        expr: sum(increase(seats_gauge_refresh_failures_total[10m])) > 0
+        labels:
+          severity: warn
+        annotations:
+          summary: "Seat metrics could not be read from the database"
+          description: "The seats and invariant gauges are missing for these scrapes; usually accompanies a database problem."

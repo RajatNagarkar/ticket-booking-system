@@ -2,6 +2,9 @@
 <!--
   JSON logs (one object per line) with the request MDC: request_id, user_id, show_id,
   reservation_id, outcome. Run with the "plain-logs" profile for human-readable local output.
+
+  The "loki" profile additionally ships every line to Grafana Loki (batched, off the request
+  thread). It needs LOKI_URL, LOKI_USER and LOKI_TOKEN; APP_ENV labels the stream (default "prod").
 -->
 <configuration>
     <springProfile name="plain-logs">
@@ -28,6 +31,43 @@
 
         <root level="INFO">
             <appender-ref ref="ASYNC_JSON"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="loki">
+        <springProperty name="LOKI_URL" source="LOKI_URL"/>
+        <springProperty name="LOKI_USER" source="LOKI_USER"/>
+        <springProperty name="LOKI_TOKEN" source="LOKI_TOKEN"/>
+        <springProperty name="APP_ENV" source="APP_ENV" defaultValue="prod"/>
+
+        <appender name="LOKI" class="com.github.loki4j.logback.Loki4jAppender">
+            <!-- Default is 60 s; ship within a second so a burst can be watched live. -->
+            <batchTimeoutMs>1000</batchTimeoutMs>
+            <http>
+                <url>${LOKI_URL}/loki/api/v1/push</url>
+                <auth>
+                    <username>${LOKI_USER}</username>
+                    <password>${LOKI_TOKEN}</password>
+                </auth>
+            </http>
+            <format>
+                <!-- Few, low-cardinality labels; request_id, user_id etc. stay in the JSON body. -->
+                <label>
+                    <pattern>app=ticket-booking-system,env=${APP_ENV},level=%level</pattern>
+                </label>
+                <!-- Same JSON as stdout. -->
+                <message class="net.logstash.logback.layout.LogstashLayout">
+                    <fieldNames>
+                        <timestamp>ts</timestamp>
+                        <version>[ignore]</version>
+                        <levelValue>[ignore]</levelValue>
+                    </fieldNames>
+                </message>
+            </format>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="LOKI"/>
         </root>
     </springProfile>
 </configuration>
