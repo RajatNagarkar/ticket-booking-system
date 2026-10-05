@@ -1,0 +1,44 @@
+# Local stack: docker compose up --build
+# All credentials here are for local use only.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tbs
+      POSTGRES_USER: tbs_owner
+      POSTGRES_PASSWORD: tbs_owner
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tbs_owner -d tbs"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-local}
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB_URL: jdbc:postgresql://db:5432/tbs
+      DB_USERNAME: app_runner
+      DB_PASSWORD: app_runner
+      FLYWAY_USER: tbs_owner
+      FLYWAY_PASSWORD: tbs_owner
+      JWT_SECRET: local-compose-secret-change-me-in-production
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8085/tbs/actuator/health/readiness || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+
+volumes:
+  db-data:
