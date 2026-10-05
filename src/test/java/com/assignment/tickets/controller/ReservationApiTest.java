@@ -6,6 +6,7 @@ import com.assignment.tickets.IntegrationTest;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -18,6 +19,9 @@ import java.util.function.Function;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -476,6 +480,127 @@ class ReservationApiTest extends IntegrationTest {
         }
     }
 
+    @Test
+    void idempotencyKeyCanBeSentAsHeader() {
+        String showId = createShow(List.of("A1"), 100);
+        String key = key();
+
+        ResponseEntity<JsonNode> first = reserveWithKeys(showId, "alice", List.of("A1"), key, null);
+        ResponseEntity<JsonNode> retry = reserveWithKeys(showId, "alice", List.of("A1"), key, null);
+
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(retry.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("true");
+        assertThat(retry.getBody().get("reservation_id")).isEqualTo(first.getBody().get("reservation_id"));
+    }
+
+    @Test
+    void headerAndBodyKeyAreTheSameKey() {
+        String showId = createShow(List.of("A1"), 100);
+        String key = key();
+        String reservationId = reservationId(reserveWithKeys(showId, "alice", List.of("A1"), null, key));
+
+        ResponseEntity<JsonNode> retry = reserveWithKeys(showId, "alice", List.of("A1"), key, key);
+
+        assertThat(retry.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(retry.getBody().get("reservation_id").asText()).isEqualTo(reservationId);
+    }
+
+    @Test
+    void conflictingHeaderAndBodyKeysAre400() {
+        String showId = createShow(List.of("A1"), 100);
+
+        ResponseEntity<JsonNode> response = reserveWithKeys(showId, "alice", List.of("A1"), key(), key());
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().get("error").asText()).isEqualTo("conflicting_idempotency_key");
+        assertThat(seatStatus(getShow(showId), "A1")).isEqualTo("available");
+    }
+
+    @Test
+    void missingOrOversizedKeyIs400() {
+        String showId = createShow(List.of("A1"), 100);
+
+        ResponseEntity<JsonNode> missing = reserveWithKeys(showId, "alice", List.of("A1"), null, null);
+        ResponseEntity<JsonNode> tooLong = reserveWithKeys(showId, "alice", List.of("A1"), "k".repeat(129), null);
+
+        assertThat(missing.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(missing.getBody().get("error").asText()).isEqualTo("missing_idempotency_key");
+        assertThat(tooLong.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(tooLong.getBody().get("error").asText()).isEqualTo("invalid_idempotency_key");
+    }
+
+    @Test
+    void retryWithANewKeyReturnsTheReservationTheUserAlreadyHolds() {
+        String showId = createShow(List.of("A1", "A2", "A3"), 100);
+        String firstId = reservationId(reserve(showId, "alice", List.of("A1", "A2"), key()));
+        String newKey = key();
+
+        ResponseEntity<JsonNode> retry = reserve(showId, "alice", List.of("A2", "A1"), newKey);
+
+        assertThat(retry.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(retry.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("true");
+        assertThat(retry.getBody().get("reservation_id").asText()).isEqualTo(firstId);
+        assertThat(reservationCount(showId)).isEqualTo(1);
+        assertThat(heldBy(showId, "alice")).isEqualTo(2);
+        // The new key was not claimed by the rolled-back attempt.
+        ResponseEntity<JsonNode> other = reserve(showId, "alice", List.of("A3"), newKey);
+        assertThat(other.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(other.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("false");
+    }
+
+    @Test
+    void userAtTheLimitStillGetsTheirReservationBack() {
+        String showId = createShow(List.of("A1", "A2"), 100, 2);
+        String firstId = reservationId(reserve(showId, "alice", List.of("A1", "A2"), key()));
+
+        ResponseEntity<JsonNode> retry = reserve(showId, "alice", List.of("A1", "A2"), key());
+
+        assertThat(retry.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(retry.getBody().get("reservation_id").asText()).isEqualTo(firstId);
+        assertThat(heldBy(showId, "alice")).isEqualTo(2);
+    }
+
+    @Test
+    void partialOverlapWithOwnReservationIsStillSeatTaken() {
+        // Limit 5 so the superset request (2 held + 3) is judged on seats, not on the limit.
+        String showId = createShow(List.of("A1", "A2", "A3"), 100, 5);
+        reserve(showId, "alice", List.of("A1", "A2"), key());
+
+        ResponseEntity<JsonNode> subset = reserve(showId, "alice", List.of("A1"), key());
+        ResponseEntity<JsonNode> superset = reserve(showId, "alice", List.of("A1", "A2", "A3"), key());
+
+        assertThat(subset.getBody().get("error").asText()).isEqualTo("seat_taken");
+        assertThat(superset.getBody().get("error").asText()).isEqualTo("seat_taken");
+        assertThat(seatStatus(getShow(showId), "A3")).isEqualTo("available");
+    }
+
+    @Test
+    void afterCancelSameSeatsWithANewKeyBookAgain() {
+        String showId = createShow(List.of("A1"), 100);
+        String firstId = reservationId(reserve(showId, "alice", List.of("A1"), key()));
+        cancel(firstId, "alice");
+
+        ResponseEntity<JsonNode> again = reserve(showId, "alice", List.of("A1"), key());
+
+        assertThat(again.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(again.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("false");
+        assertThat(again.getBody().get("reservation_id").asText()).isNotEqualTo(firstId);
+    }
+
+    @Test
+    void takenSeatIsReportedBeforeTheLimit() {
+        String showId = createShow(List.of("A1", "A2"), 100, 1);
+        reserve(showId, "alice", List.of("A1"), key());
+        reserve(showId, "bob", List.of("A2"), key());
+
+        // Alice is at her limit and A2 is taken: the seat decline wins, decided without touching the quota.
+        ResponseEntity<JsonNode> response = reserve(showId, "alice", List.of("A2"), key());
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody().get("error").asText()).isEqualTo("seat_taken");
+        assertThat(heldBy(showId, "alice")).isEqualTo(1);
+    }
+
     private static String key() {
         return UUID.randomUUID().toString();
     }
@@ -517,6 +642,23 @@ class ReservationApiTest extends IntegrationTest {
 
     private ResponseEntity<JsonNode> reserve(String showId, String userId, List<String> seats, String key) {
         return post("/tbs/shows/" + showId + "/reserve", Map.of("seats", seats, "idempotency_key", key), userId);
+    }
+
+    /** Either key may be null; a null body key is omitted from the body. */
+    private ResponseEntity<JsonNode> reserveWithKeys(String showId, String userId, List<String> seats,
+                                                     String headerKey, String bodyKey) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(tokens.issue(userId, false).accessToken());
+        if (headerKey != null) {
+            headers.set("Idempotency-Key", headerKey);
+        }
+        Map<String, Object> body = new HashMap<>();
+        body.put("seats", seats);
+        if (bodyKey != null) {
+            body.put("idempotency_key", bodyKey);
+        }
+        return http.exchange("/tbs/shows/" + showId + "/reserve", HttpMethod.POST, new HttpEntity<>(body, headers),
+                JsonNode.class);
     }
 
     private ResponseEntity<JsonNode> cancel(String reservationId, String userId) {
