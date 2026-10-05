@@ -14,6 +14,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 import java.util.stream.IntStream;
@@ -605,13 +606,26 @@ class ReservationApiTest extends IntegrationTest {
         return UUID.randomUUID().toString();
     }
 
+    /**
+     * Every racer opens its own connection. At most {@link #MAX_IN_FLIGHT} are in flight at once:
+     * macOS caps the listen backlog at 128 (kern.ipc.somaxconn) and resets connections beyond it.
+     * That is still far more than the DB pool, so requests contend on the same rows.
+     */
+    private static final int MAX_IN_FLIGHT = 100;
+
     private <T> List<T> race(int racers, Function<Integer, T> request) throws Exception {
         CountDownLatch start = new CountDownLatch(1);
+        Semaphore inFlight = new Semaphore(MAX_IN_FLIGHT);
         try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<T>> futures = IntStream.range(0, racers)
                     .mapToObj(i -> pool.submit(() -> {
                         start.await();
-                        return request.apply(i);
+                        inFlight.acquire();
+                        try {
+                            return request.apply(i);
+                        } finally {
+                            inFlight.release();
+                        }
                     }))
                     .toList();
             start.countDown();
