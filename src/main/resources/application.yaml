@@ -8,8 +8,9 @@ spring:
     # POSTGRES_DB_URL wins if set; otherwise built from the PG* variables a Railway Postgres
     # reference provides (private network, so no TLS parameters).
     url: ${POSTGRES_DB_URL:jdbc:postgresql://${PGHOST}:${PGPORT:5432}/${PGDATABASE}}
-    username: ${PGUSER}
-    password: ${PGPASSWORD}
+    # DB_* (the DML-only app role) win if set; otherwise the PG* owner credentials.
+    username: ${DB_USERNAME:${PGUSER}}
+    password: ${DB_PASSWORD:${PGPASSWORD}}
     driver-class-name: org.postgresql.Driver
     hikari:
       # Fixed-size pool. Requests beyond it queue for up to connection-timeout instead of failing.
@@ -20,8 +21,8 @@ spring:
     enabled: true
     # Migrations run as the schema owner; the app itself connects as a DML-only role.
     # FLYWAY_* win if set; otherwise the database owner from the PG* variables.
-    user: ${PGUSER}
-    password: ${PGPASSWORD}
+    user: ${FLYWAY_USER:${PGUSER}}
+    password: ${FLYWAY_PASSWORD:${PGPASSWORD}}
     locations: classpath:db/migration
     baseline-on-migrate: false
     validate-on-migrate: true
