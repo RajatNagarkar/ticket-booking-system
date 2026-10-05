@@ -1,0 +1,13 @@
+# Build context: only pom.xml and src/ are needed (see Dockerfile).
+.git/
+target/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+.github/
+docker/
+*.md
+Dockerfile
+docker-compose.yml
+.env

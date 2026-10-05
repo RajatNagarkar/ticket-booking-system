@@ -17,6 +17,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import com.zaxxer.hikari.HikariDataSource;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -106,7 +107,8 @@ class ObservabilityApiTest extends IntegrationTest {
         List<Connection> held = new ArrayList<>();
         try {
             // Take every connection the request pool has; a probe sharing that pool would block.
-            for (int i = 0; i < 20; i++) {
+            int poolSize = dataSource.unwrap(HikariDataSource.class).getMaximumPoolSize();
+            for (int i = 0; i < poolSize; i++) {
                 held.add(dataSource.getConnection());
             }
             long start = System.nanoTime();

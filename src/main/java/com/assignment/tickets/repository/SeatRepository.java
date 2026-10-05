@@ -1,7 +1,9 @@
 package com.assignment.tickets.repository;
 
 import com.assignment.tickets.entity.Seat;
+import com.assignment.tickets.entity.SeatConfirmation;
 import com.assignment.tickets.entity.SeatCount;
+import com.assignment.tickets.entity.SeatState;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
@@ -29,30 +31,55 @@ public class SeatRepository {
     }
 
     /**
-     * Row-locks the requested seats. ORDER BY makes every transaction acquire locks in the
-     * same order, so overlapping multi-seat requests queue behind each other instead of
-     * deadlocking. A waiter sees the latest committed status once it gets the lock.
+     * Committed status and owner of the requested seats, without taking locks. Used only to
+     * decline early (a seat already confirmed stays taken until its owner cancels); the decision
+     * to take a seat is always made by {@link #lockAndConfirm}.
      */
-    public List<Seat> lockForUpdate(UUID showId, List<String> seatNos) {
+    public List<SeatState> currentState(UUID showId, List<String> seatNos) {
         return jdbc.query("""
-                SELECT seat_no, status
+                SELECT seat_no, status, user_id, reservation_id
                 FROM seats
                 WHERE show_id = ? AND seat_no = ANY(?::text[])
-                ORDER BY seat_no
-                FOR UPDATE
-                """, SEAT_MAPPER, showId, seatNos.toArray(String[]::new));
+                """, (rs, i) -> new SeatState(rs.getString("seat_no"), rs.getString("status"),
+                rs.getString("user_id"), rs.getObject("reservation_id", UUID.class)),
+                showId, seatNos.toArray(String[]::new));
     }
 
     /**
-     * The atomic decision: only seats still available are taken. Returns the number of
-     * seats confirmed; anything less than requested means another reservation won.
+     * The atomic decision, in one round trip:
+     * <ol>
+     *   <li>{@code locked}: row-lock the requested seats in seat_no order. Every transaction locks
+     *       in the same order, so overlapping multi-seat requests queue instead of deadlocking.
+     *       A transaction that waited sees the latest committed status once it holds the lock.</li>
+     *   <li>{@code taken}: confirm only seats that are still available. The guard is re-checked
+     *       against the latest row version, so of N racers for one seat exactly one updates it.</li>
+     * </ol>
+     * Fewer confirmed than requested means another reservation won; the caller rolls back.
      */
-    public int confirm(UUID showId, List<String> seatNos, UUID reservationId, String userId) {
-        return jdbc.update("""
-                UPDATE seats
-                SET status = 'confirmed', reservation_id = ?, user_id = ?
-                WHERE show_id = ? AND seat_no = ANY(?::text[]) AND status = 'available'
-                """, reservationId, userId, showId, seatNos.toArray(String[]::new));
+    public SeatConfirmation lockAndConfirm(UUID showId, List<String> seatNos, UUID reservationId, String userId) {
+        String[] seats = seatNos.toArray(String[]::new);
+        return jdbc.queryForObject("""
+                WITH locked AS (
+                    SELECT seat_no, status
+                    FROM seats
+                    WHERE show_id = ? AND seat_no = ANY(?::text[])
+                    ORDER BY seat_no
+                    FOR UPDATE
+                ), taken AS (
+                    UPDATE seats s
+                    SET status = 'confirmed', reservation_id = ?, user_id = ?
+                    FROM locked l
+                    WHERE s.show_id = ? AND s.seat_no = l.seat_no
+                      AND l.status = 'available' AND s.status = 'available'
+                    RETURNING s.seat_no
+                )
+                SELECT (SELECT count(*) FROM locked) AS found,
+                       (SELECT count(*) FROM taken) AS confirmed,
+                       (SELECT coalesce(array_agg(seat_no ORDER BY seat_no), '{}') FROM locked
+                        WHERE status <> 'available') AS unavailable
+                """, (rs, i) -> new SeatConfirmation(rs.getInt("found"), rs.getInt("confirmed"),
+                List.of((String[]) rs.getArray("unavailable").getArray())),
+                showId, seats, reservationId, userId, showId);
     }
 
     /**
