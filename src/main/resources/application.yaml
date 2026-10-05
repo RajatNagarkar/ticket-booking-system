@@ -22,6 +22,10 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: false
     validate-on-migrate: true
+    # Used by the beforeMigrate callback to create the application role (brackets keep the "_").
+    placeholders:
+      "[app_user]": ${DB_USERNAME:}
+      "[app_password]": ${DB_PASSWORD:}
   jackson:
     property-naming-strategy: SNAKE_CASE
   mvc:
