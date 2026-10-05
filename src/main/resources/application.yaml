@@ -10,8 +10,9 @@ spring:
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: 20
-      minimum-idle: 20
+      # Fixed-size pool. Requests beyond it queue for up to connection-timeout instead of failing.
+      maximum-pool-size: ${DB_POOL_SIZE:40}
+      minimum-idle: ${DB_POOL_SIZE:40}
       connection-timeout: 30000
   flyway:
     enabled: true
@@ -36,10 +37,24 @@ app:
     ttl: ${JWT_TTL:PT12H}
 
 server:
-  port: 8085
+  # Hosting platforms inject PORT; 8085 locally.
+  port: ${PORT:8085}
   shutdown: graceful
+  tomcat:
+    # Request handling runs on virtual threads, so connections are cheap. The defaults (8192
+    # connections, 100 queued) would refuse part of an on-sale stampede; refused connections
+    # surface as proxy 502s. Requests beyond the DB pool queue for a connection instead.
+    max-connections: 20000
+    accept-count: 2000
+
+info:
+  app:
+    commit: ${APP_COMMIT:unknown}
 
 management:
+  info:
+    env:
+      enabled: true
   endpoints:
     web:
       exposure:

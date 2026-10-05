@@ -29,6 +29,13 @@ COPY --from=build --chown=app:app /build/app/lib lib
 COPY --from=build --chown=app:app /build/app/ticket-booking-system-*.jar app.jar
 USER app
 
+# Sized for a 1 GB container. In under ~1.8 GB the JVM would default to SerialGC (single-threaded,
+# stop-the-world) with a 768 MB heap, leaving too little room for metaspace, the CDS archive, the
+# JIT and thread stacks: the container measured 983 MB / 1 GB under a burst. G1 keeps pauses short;
+# a 65% heap leaves ~350 MB of native headroom. Set before the CDS training run so the archive is
+# built with the same flags it runs with.
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=65 -XX:+UseG1GC -XX:MaxMetaspaceSize=192m -XX:+ExitOnOutOfMemoryError"
+
 # AppCDS training run: start the context and exit as soon as it is refreshed, recording the
 # loaded classes. Nothing connects to a database here: Flyway is off and connection pools only
 # open on first use. The archive must be built by the same JVM that runs it, hence this stage.
@@ -44,5 +51,4 @@ RUN java -XX:ArchiveClassesAtExit=app.jsa \
 
 EXPOSE 8085
 
-ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 ENTRYPOINT ["java", "-XX:SharedArchiveFile=app.jsa", "-jar", "app.jar"]

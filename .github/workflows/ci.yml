@@ -48,6 +48,10 @@ jobs:
       - name: Smoke test
         run: ./scripts/smoke.sh http://localhost:8085/tbs
 
+      # A reduced stampede on every change: same scenarios and checks as the full burst.
+      - name: Burst
+        run: ./burst.sh http://localhost:8085/tbs --concurrency 500 --random 4000
+
       - name: Show app logs
         if: always()
         run: docker compose logs app

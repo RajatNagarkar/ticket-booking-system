@@ -31,8 +31,16 @@ services:
       FLYWAY_USER: tbs_owner
       FLYWAY_PASSWORD: tbs_owner
       JWT_SECRET: local-compose-secret-change-me-in-production
+      # Optional: ship logs to Grafana Loki. Set these in your shell or .env (never commit them).
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+      LOKI_URL: ${LOKI_URL:-}
+      LOKI_USER: ${LOKI_USER:-}
+      LOKI_TOKEN: ${LOKI_TOKEN:-}
+      APP_ENV: ${APP_ENV:-local}
     ports:
-      - "8085:8085"
+      - "${APP_PORT:-8085}:8085"
+    # Same memory as the production machine, so local bursts are representative.
+    mem_limit: 1g
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8085/tbs/actuator/health/readiness || exit 1"]
       interval: 5s

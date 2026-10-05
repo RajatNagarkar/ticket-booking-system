@@ -46,6 +46,8 @@ confirmed=$(echo "$counts" | sed -nE 's/.*"confirmed":([0-9]+).*/\1/p')
   || fail "unexpected counts available=$available held=$held confirmed=$confirmed"
 echo "ok   invariant 2 + 0 + 1 == 3"
 
-curl -fsS "$BASE_URL/actuator/prometheus" | grep -q '^reservations_confirmed_total' || fail "metrics not exposed"
+# Fetch first: piping into grep -q closes the pipe early, so curl fails (23) under pipefail.
+metrics=$(curl -fsS "$BASE_URL/actuator/prometheus") || fail "metrics endpoint unreachable"
+grep -q '^reservations_confirmed_total' <<<"$metrics" || fail "metrics not exposed"
 echo "ok   metrics exposed"
 echo "SMOKE PASSED"
