@@ -2,6 +2,7 @@ package com.assignment.tickets.observability;
 
 import static net.logstash.logback.argument.StructuredArguments.kv;
 
+import com.assignment.tickets.controller.MetricsScrapeController;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -60,6 +61,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     /** Health probes and metric scrapes would drown out real traffic. */
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return request.getRequestURI().contains("/actuator/");
+        String uri = request.getRequestURI();
+        return uri.contains("/actuator/") || uri.endsWith(MetricsScrapeController.PATH);
     }
 }

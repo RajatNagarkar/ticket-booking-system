@@ -28,6 +28,7 @@ public abstract class IntegrationTest {
 
     protected static final String JWT_SECRET = "test-secret-at-least-32-bytes-long!!";
     protected static final String ADMIN = "admin";
+    protected static final String METRICS_PASSWORD = "test-scrape-password";
 
     @Autowired
     protected TestRestTemplate http;
@@ -48,6 +49,7 @@ public abstract class IntegrationTest {
         registry.add("spring.flyway.user", POSTGRES::getUsername);
         registry.add("spring.flyway.password", POSTGRES::getPassword);
         registry.add("app.jwt.secret", () -> JWT_SECRET);
+        registry.add("app.metrics.scrape.password", () -> METRICS_PASSWORD);
     }
 
     // java.net.http client: reads 4xx bodies on POST (HttpURLConnection fails on 401) and pools connections.

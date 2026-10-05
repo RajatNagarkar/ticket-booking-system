@@ -126,6 +126,32 @@ class ObservabilityApiTest extends IntegrationTest {
     }
 
     @Test
+    void scrapeEndpointForGrafanaRequiresBasicAuth() {
+        String showId = createShow(List.of("A1", "A2"), 4);
+
+        ResponseEntity<String> anonymous = http.getForEntity("/tbs/internal/metrics", String.class);
+        ResponseEntity<String> wrong = http.withBasicAuth("grafana", "wrong").getForEntity("/tbs/internal/metrics", String.class);
+        HttpHeaders adminToken = new HttpHeaders();
+        adminToken.setBearerAuth(tokens.issue(ADMIN, true).accessToken());
+        ResponseEntity<String> bearer = http.exchange("/tbs/internal/metrics", HttpMethod.GET,
+                new HttpEntity<>(adminToken), String.class);
+        ResponseEntity<String> granted = http.withBasicAuth("grafana", METRICS_PASSWORD)
+                .getForEntity("/tbs/internal/metrics", String.class);
+
+        assertThat(anonymous.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(anonymous.getHeaders().getFirst(HttpHeaders.WWW_AUTHENTICATE)).startsWith("Basic");
+        assertThat(wrong.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(bearer.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(granted.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(granted.getHeaders().getContentType().toString()).startsWith("text/plain");
+        // Seat gauges are refreshed for this scrape too, not only for /actuator/prometheus.
+        assertThat(granted.getBody()).contains("reservations_confirmed_total")
+                .contains("seats{application=\"ticket-booking-system\",show=\"" + showId + "\",status=\"available\"} 2.0");
+        // The public actuator endpoint is unchanged.
+        assertThat(scrape()).contains("reservations_confirmed_total");
+    }
+
+    @Test
     void latencyHistogramIsExposed() {
         http.getForEntity("/tbs/shows/" + UUID.randomUUID(), JsonNode.class);
 
