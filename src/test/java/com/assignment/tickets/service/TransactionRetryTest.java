@@ -135,8 +135,15 @@ class TransactionRetryTest extends IntegrationTest {
     }
 
     private UUID insertShow(String name) {
-        return jdbc.queryForObject(
-                "INSERT INTO shows (name, price_paise, total_seats) VALUES (?, 100, 1) RETURNING id", UUID.class, name);
+        // With its one seat row, so the show satisfies the invariant the seat gauges check.
+        return jdbc.queryForObject("""
+                WITH show AS (
+                    INSERT INTO shows (name, price_paise, total_seats) VALUES (?, 100, 1) RETURNING id
+                ), seat AS (
+                    INSERT INTO seats (show_id, seat_no) SELECT id, 'A1' FROM show
+                )
+                SELECT id FROM show
+                """, UUID.class, name);
     }
 
     private int showsNamed(String name) {
